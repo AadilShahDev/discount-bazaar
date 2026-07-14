@@ -85,3 +85,12 @@ export async function captureFunds(trackerId: string, amount: number): Promise<v
 export async function voidFunds(trackerId: string): Promise<void> {
   console.info(`[safepay] voidFunds: tracker=${trackerId}`);
 }
+
+/**
+ * Mock of Safepay.payment.refund(). Returns the captured amount to the
+ * buyer's original payment method. Used when an admin approves a dispute
+ * refund.
+ */
+export async function refundFunds(trackerId: string, amount: number): Promise<void> {
+  console.info(`[safepay] refundFunds: tracker=${trackerId} amount=${amount}`);
+}

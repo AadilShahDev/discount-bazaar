@@ -1,13 +1,16 @@
 import { type Request, type Response } from "express";
-import { Types } from "mongoose";
+import mongoose, { Types } from "mongoose";
 import Dispute from "../models/Dispute.js";
 import Order from "../models/Order.js";
+import Transaction from "../models/Transaction.js";
 import {
   DisputeStatus as DisputeStatusEnum,
   type DisputeIssueType,
+  EscrowState as EscrowStateEnum,
   OrderLogisticsStatus as LogisticsEnum,
 } from "../types/enums.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { refundFunds } from "../utils/safepay.js";
 
 /* ------------------------------------------------------------------ */
 /* Step 3.2 — createDispute (Buyer)                                   */
@@ -142,6 +145,126 @@ export const getAdminDisputes = asyncHandler(
         total,
         pages: Math.ceil(total / limitNum) || 0,
       },
+    });
+  },
+);
+
+/* ------------------------------------------------------------------ */
+/* Step 2 — resolveDispute (Admin)                                    */
+/* ------------------------------------------------------------------ */
+
+interface ResolveDisputeBody {
+  resolution?: "Refund" | "Reject";
+  admin_notes?: string;
+}
+
+/**
+ * PUT /api/disputes/:id/resolve
+ * Protected (Admin). Resolves a dispute by either refunding the buyer or
+ * rejecting the claim.
+ *
+ * - Reject: closes the dispute and records the admin's notes.
+ * - Refund: in a Mongoose transaction, calls Safepay to refund the captured
+ *   transaction, marks the Order as refunded, flips the Transaction escrow
+ *   state to Refunded, and marks the dispute as Refunded.
+ */
+export const resolveDispute = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const adminId = req.user?.userId;
+    const { id } = req.params;
+    const { resolution, admin_notes } = req.body as ResolveDisputeBody;
+
+    if (!adminId) {
+      res.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    if (!id || !Types.ObjectId.isValid(id)) {
+      res.status(400).json({ error: "A valid dispute id is required." });
+      return;
+    }
+    if (resolution !== "Refund" && resolution !== "Reject") {
+      res.status(400).json({ error: "resolution must be 'Refund' or 'Reject'." });
+      return;
+    }
+    if (!admin_notes || admin_notes.trim().length < 5) {
+      res.status(400).json({ error: "admin_notes must be at least 5 characters." });
+      return;
+    }
+
+    const dispute = await Dispute.findById(id);
+    if (!dispute) {
+      res.status(404).json({ error: "Dispute not found." });
+      return;
+    }
+    // Only active disputes can be resolved.
+    if (
+      dispute.status === DisputeStatusEnum.Closed ||
+      dispute.status === DisputeStatusEnum.Refunded ||
+      dispute.status === DisputeStatusEnum.Rejected
+    ) {
+      res.status(409).json({ error: "This dispute is already resolved." });
+      return;
+    }
+
+    /* ---- Reject path (no money movement) ---- */
+    if (resolution === "Reject") {
+      dispute.status = DisputeStatusEnum.Closed;
+      dispute.resolutionNote = admin_notes.trim();
+      dispute.resolvedBy = new Types.ObjectId(adminId);
+      dispute.resolvedAt = new Date();
+      await dispute.save();
+
+      res.status(200).json({
+        message: "Dispute rejected and closed.",
+        data: { disputeId: dispute._id, status: dispute.status },
+      });
+      return;
+    }
+
+    /* ---- Refund path (transactional money movement) ---- */
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const order = await Order.findById(dispute.orderId).session(session);
+        if (!order) {
+          throw new Error(`Order ${dispute.orderId} not found for dispute ${dispute._id}.`);
+        }
+
+        const txn = await Transaction.findById(order.transactionId).session(session);
+        if (!txn) {
+          throw new Error(
+            `Transaction ${order.transactionId} not found for order ${order._id}.`,
+          );
+        }
+        if (txn.escrowState !== EscrowStateEnum.Captured) {
+          throw new Error(
+            `Cannot refund: transaction escrow state is ${txn.escrowState}, expected Captured.`,
+          );
+        }
+
+        // Mock Safepay refund of the captured deposit back to the buyer's card.
+        await refundFunds(txn.safepayTrackerId, txn.holdAmount);
+
+        txn.escrowState = EscrowStateEnum.Refunded;
+        await txn.save({ session });
+
+        order.isRefunded = true;
+        order.refundedAt = new Date();
+        await order.save({ session });
+
+        dispute.status = DisputeStatusEnum.Refunded;
+        dispute.resolutionNote = admin_notes.trim();
+        dispute.resolvedBy = new Types.ObjectId(adminId);
+        dispute.resolvedAt = new Date();
+        await dispute.save({ session });
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    res.status(200).json({
+      message: "Dispute resolved — buyer refunded.",
+      data: { disputeId: dispute._id, status: DisputeStatusEnum.Refunded },
     });
   },
 );

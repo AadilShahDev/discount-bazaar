@@ -62,6 +62,8 @@ export interface IOrder extends Document {
   trackingNumber?: string;
   courier?: string;
   deliveredAt?: Date;
+  isRefunded?: boolean;
+  refundedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -97,9 +99,11 @@ const OrderSchema = new Schema<IOrder>(
       required: true,
       index: true,
     },
-    trackingNumber: { type: String, trim: true },
+    trackingNumber: { type: String, trim: true, index: true },
     courier: { type: String, trim: true },
     deliveredAt: { type: Date },
+    isRefunded: { type: Boolean, default: false },
+    refundedAt: { type: Date },
   },
   { timestamps: true },
 );

@@ -14,6 +14,103 @@ import { computeOrderFinance, roundPKR } from "../utils/orderFinance.js";
 import { captureFunds, createAuthorization } from "../utils/safepay.js";
 
 /* ------------------------------------------------------------------ */
+/* Step 1 — courierWebhook (Logistics Sync)                           */
+/* ------------------------------------------------------------------ */
+
+interface CourierWebhookBody {
+  tracking_number?: string;
+  status?: string;
+  courier?: string;
+}
+
+/**
+ * Maps raw courier status strings (Trax / Leopards) to our internal
+ * OrderLogisticsStatus enum. RTO (Return to Origin) maps to Returned.
+ */
+const COURIER_STATUS_MAP: Record<string, LogisticsEnum> = {
+  Delivered: LogisticsEnum.Delivered,
+  DELIVERED: LogisticsEnum.Delivered,
+  In_Transit: LogisticsEnum.Shipped,
+  InTransit: LogisticsEnum.Shipped,
+  Shipped: LogisticsEnum.Shipped,
+  OutForDelivery: LogisticsEnum.OutForDelivery,
+  Out_for_Delivery: LogisticsEnum.OutForDelivery,
+  RTO: LogisticsEnum.Returned,
+  Returned: LogisticsEnum.Returned,
+  RETURNED: LogisticsEnum.Returned,
+  Cancelled: LogisticsEnum.Cancelled,
+  Canceled: LogisticsEnum.Cancelled,
+  Packed: LogisticsEnum.Packed,
+};
+
+/**
+ * POST /api/orders/webhook
+ * Public. Receives logistics status updates from courier partners (Trax,
+ * Leopards, etc.). Looks up the order by trackingNumber, updates its
+ * logisticsStatus, and stamps deliveredAt when the package is delivered —
+ * which implicitly unlocks the buyer's ability to open a dispute.
+ */
+export const courierWebhook = asyncHandler(
+  async (req: Request, res: Response): Promise<void> => {
+    const { tracking_number, status, courier } = req.body as CourierWebhookBody;
+
+    if (!tracking_number) {
+      res.status(400).json({ error: "tracking_number is required." });
+      return;
+    }
+    if (!status) {
+      res.status(400).json({ error: "status is required." });
+      return;
+    }
+
+    const mappedStatus = COURIER_STATUS_MAP[status];
+    if (!mappedStatus) {
+      res.status(400).json({
+        error: `Unknown courier status '${status}'. Supported: ${Object.keys(COURIER_STATUS_MAP).join(", ")}`,
+      });
+      return;
+    }
+
+    const order = await Order.findOne({ trackingNumber: tracking_number });
+    if (!order) {
+      res.status(404).json({ error: "No order found for this tracking number." });
+      return;
+    }
+
+    // Idempotent — don't touch orders already in a terminal state.
+    if (
+      order.logisticsStatus === LogisticsEnum.Delivered ||
+      order.logisticsStatus === LogisticsEnum.Cancelled ||
+      order.logisticsStatus === LogisticsEnum.Returned
+    ) {
+      res.status(200).json({
+        received: true,
+        orderId: order._id,
+        logisticsStatus: order.logisticsStatus,
+        message: "Order already in a terminal logistics state — no update applied.",
+      });
+      return;
+    }
+
+    order.logisticsStatus = mappedStatus;
+    if (courier) {
+      order.courier = courier;
+    }
+    if (mappedStatus === LogisticsEnum.Delivered) {
+      order.deliveredAt = new Date();
+    }
+
+    await order.save();
+
+    res.status(200).json({
+      received: true,
+      orderId: order._id,
+      logisticsStatus: order.logisticsStatus,
+      deliveredAt: order.deliveredAt ?? null,
+    });
+  },
+);
+/* ------------------------------------------------------------------ */
 /* Step 2.2 — createStandardOrder (Buy Now)                           */
 /* ------------------------------------------------------------------ */
 

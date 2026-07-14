@@ -1,12 +1,16 @@
 import { Router } from "express";
 import {
   createStandardOrder,
+  courierWebhook,
   getBuyerOrders,
   getSupplierManifests,
 } from "../controllers/orderController.js";
 import { requireAuth, requireRole } from "../middlewares/authMiddleware.js";
 
 const router = Router();
+
+// Public — courier webhook (Trax / Leopards) for logistics status sync.
+router.post("/webhook", courierWebhook);
 
 // Protected — buyer creates a standard "Buy Now" order.
 router.post("/", requireAuth, createStandardOrder);

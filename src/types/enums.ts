@@ -25,6 +25,7 @@ export const EscrowState = {
   Authorized: "Authorized",
   Captured: "Captured",
   Voided: "Voided",
+  Refunded: "Refunded",
 } as const;
 export type EscrowState = (typeof EscrowState)[keyof typeof EscrowState];
 
@@ -55,6 +56,8 @@ export const DisputeStatus = {
   UnderReview: "UnderReview",
   Resolved: "Resolved",
   Rejected: "Rejected",
+  Refunded: "Refunded",
+  Closed: "Closed",
 } as const;
 export type DisputeStatus = (typeof DisputeStatus)[keyof typeof DisputeStatus];
 

@@ -30,11 +30,13 @@ export const getSuppliers = asyncHandler(
 
 /**
  * GET /api/users/supplier-applications
- * Admin-only. Returns all supplier applications, including pending ones.
+ * Admin-only. Returns supplier applications that have submitted KYC
+ * (verificationStatus === 'Pending'). Users who just registered
+ * (Unverified) are NOT included — they haven't submitted documents yet.
  */
 export const getSupplierApplications = asyncHandler(
   async (_req: Request, res: Response): Promise<void> => {
-    const applications = await User.find({ role: UserRoleEnum.Supplier })
+    const applications = await User.find({ role: UserRoleEnum.Supplier, verificationStatus: "Pending" })
       .select("name phoneNumber email verificationStatus reviewNote supplierDetails.companyName dropshipNetworkId cnicNtn contactNumber createdAt")
       .sort({ createdAt: -1 })
       .lean();

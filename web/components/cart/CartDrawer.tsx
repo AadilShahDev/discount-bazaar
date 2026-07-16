@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/lib/CartContext";
-import { useAuth } from "@/lib/AuthContext";
-import { fetchActiveSquadForProduct, createStandardOrder } from "@/lib/api";
+import { fetchActiveSquadForProduct } from "@/lib/api";
 import { formatPKR } from "@/lib/format";
 import type { Product, Squad } from "@/lib/types";
 
@@ -14,21 +13,21 @@ interface CartDrawerProps {
 
 export function CartDrawer({ products }: CartDrawerProps) {
   const { items, subtotal, isOpen, closeDrawer, removeItem, updateQuantity } = useCart();
-  const { token } = useAuth();
   const router = useRouter();
-  const [isCheckingOut, setCheckingOut] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [squadMap, setSquadMap] = useState<Record<string, Squad | null>>({});
 
-  // Fetch active squads for cart items to show upsell nudges
+  // Fetch active squads for every cart item to show upsell nudges
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || items.length === 0) return;
     let cancelled = false;
     (async () => {
       const entries = await Promise.all(
         items.map(async (item) => {
           const product = products.find((p) => p._id === item.productId);
-          if (!product?.dualCheckoutEnabled) return [item.productId, null] as const;
+          // Check if the product has squad pricing enabled at all
+          if (!product?.dualCheckoutEnabled || product.pricing.maxSquadDiscount <= 0) {
+            return [item.productId, null] as const;
+          }
           try {
             const squad = await fetchActiveSquadForProduct(item.productId);
             return [item.productId, squad] as const;
@@ -57,26 +56,9 @@ export function CartDrawer({ products }: CartDrawerProps) {
     }
   }, [isOpen]);
 
-  async function handleCheckout() {
-    if (!token) {
-      closeDrawer();
-      router.push("/products");
-      return;
-    }
-    setCheckingOut(true);
-    setError(null);
-    try {
-      // Create standard orders for all cart items
-      for (const item of items) {
-        await createStandardOrder({ productId: item.productId, quantity: item.quantity, token });
-      }
-      router.push("/dashboard?order=success");
-      closeDrawer();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Checkout failed.");
-    } finally {
-      setCheckingOut(false);
-    }
+  function handleCheckout() {
+    // Retail checkout flow is not yet built — show a clear message
+    alert("Retail checkout coming soon! For now, use Squad Buy on the product page for secure escrow checkout.");
   }
 
   function handleSwitchToSquad(productId: string) {
@@ -146,12 +128,25 @@ export function CartDrawer({ products }: CartDrawerProps) {
               {items.map((item) => {
                 const product = products.find((p) => p._id === item.productId);
                 const squad = squadMap[item.productId];
-                const hasSquadUpsell =
-                  product?.dualCheckoutEnabled && squad && squad.status === "Gathering";
-                const savings = product
-                  ? product.pricing.marketAnchorPrice -
-                    product.pricing.marketAnchorPrice * (1 - product.pricing.maxSquadDiscount)
+
+                // Show upsell if: product has squad pricing AND there's an active
+                // squad that's still gathering members (or even if no active squad
+                // exists, as long as the product supports squads, we can nudge).
+                const hasSquadPricing =
+                  product?.dualCheckoutEnabled &&
+                  product.pricing.maxSquadDiscount > 0;
+
+                const hasActiveSquad = squad && squad.status === "Gathering";
+
+                // Calculate savings: retail price - lowest squad price
+                const savings = hasSquadPricing && product
+                  ? Math.round(
+                      product.pricing.marketAnchorPrice -
+                        product.pricing.marketAnchorPrice * (1 - product.pricing.maxSquadDiscount),
+                    )
                   : 0;
+
+                const showUpsell = hasSquadPricing && savings > 0;
 
                 return (
                   <div key={item.productId} className="space-y-2">
@@ -161,7 +156,9 @@ export function CartDrawer({ products }: CartDrawerProps) {
                         {item.image ? (
                           <img src={item.image} alt={item.title} className="h-full w-full object-cover" />
                         ) : (
-                          <div className="grid h-full w-full place-items-center text-[10px] text-slate-300">No img</div>
+                          <div className="grid h-full w-full place-items-center text-[10px] text-slate-300">
+                            No img
+                          </div>
                         )}
                       </div>
 
@@ -173,7 +170,13 @@ export function CartDrawer({ products }: CartDrawerProps) {
                             className="shrink-0 text-slate-300 transition hover:text-red-500"
                             aria-label="Remove item"
                           >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
+                            <svg
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth={2}
+                              className="h-4 w-4"
+                            >
                               <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
                             </svg>
                           </button>
@@ -186,7 +189,13 @@ export function CartDrawer({ products }: CartDrawerProps) {
                               className="grid h-7 w-7 place-items-center rounded-full border border-slate-200 text-slate-500 hover:border-oceanic hover:text-oceanic"
                               aria-label="Decrease quantity"
                             >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3">
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                                className="h-3 w-3"
+                              >
                                 <path d="M5 12h14" />
                               </svg>
                             </button>
@@ -198,7 +207,13 @@ export function CartDrawer({ products }: CartDrawerProps) {
                               className="grid h-7 w-7 place-items-center rounded-full border border-slate-200 text-slate-500 hover:border-oceanic hover:text-oceanic"
                               aria-label="Increase quantity"
                             >
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3">
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                                className="h-3 w-3"
+                              >
                                 <path d="M5 12h14M12 5v14" />
                               </svg>
                             </button>
@@ -210,19 +225,17 @@ export function CartDrawer({ products }: CartDrawerProps) {
                       </div>
                     </div>
 
-                    {/* Squad upsell nudge */}
-                    {hasSquadUpsell && savings > 0 && (
-                      <div className="rounded-xl border-2 border-mint bg-mint/10 p-3">
-                        <p className="text-xs font-bold text-mint-dark">
-                          🔥 Save {formatPKR(savings)} on this item by joining an active Squad instead!
-                        </p>
-                        <button
-                          onClick={() => handleSwitchToSquad(item.productId)}
-                          className="mt-2 w-full rounded-full bg-mint px-4 py-2 text-xs font-bold text-oceanic-dark transition hover:bg-mint-dark hover:text-white"
-                        >
-                          Switch to Squad Buy →
-                        </button>
-                      </div>
+                    {/* Squad upsell nudge — shown for every item that has squad pricing */}
+                    {showUpsell && (
+                      <button
+                        onClick={() => handleSwitchToSquad(item.productId)}
+                        className="flex w-full items-center justify-between gap-2 rounded-xl border-2 border-mint bg-mint/10 px-4 py-3 text-left transition hover:bg-mint/20"
+                      >
+                        <span className="text-xs font-bold text-mint-dark">
+                          🔥 Switch to Squad &amp; Save {formatPKR(savings)}
+                        </span>
+                        <span className="shrink-0 text-xs font-bold text-oceanic-dark">→</span>
+                      </button>
                     )}
                   </div>
                 );
@@ -234,17 +247,17 @@ export function CartDrawer({ products }: CartDrawerProps) {
         {/* Footer */}
         {items.length > 0 && (
           <div className="border-t border-slate-100 px-5 py-4">
-            {error && <p className="mb-3 text-xs text-red-600">{error}</p>}
             <div className="mb-3 flex items-center justify-between">
               <span className="text-sm font-medium text-slate-500">Subtotal</span>
-              <span className="font-heading text-xl font-bold text-slate-900">{formatPKR(subtotal)}</span>
+              <span className="font-heading text-xl font-bold text-slate-900">
+                {formatPKR(subtotal)}
+              </span>
             </div>
             <button
               onClick={handleCheckout}
-              disabled={isCheckingOut}
-              className="w-full rounded-full bg-oceanic px-6 py-3 text-sm font-bold text-white shadow-lg shadow-oceanic/20 transition hover:bg-oceanic-dark disabled:opacity-60"
+              className="w-full rounded-full bg-oceanic px-6 py-3 text-sm font-bold text-white shadow-lg shadow-oceanic/20 transition hover:bg-oceanic-dark"
             >
-              {isCheckingOut ? "Processing…" : "Checkout"}
+              Checkout
             </button>
             <p className="mt-2 text-center text-xs text-slate-400">
               Standard retail checkout · COD available

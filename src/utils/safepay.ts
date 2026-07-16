@@ -1,15 +1,15 @@
 /**
  * Safepay payment integration.
  *
- * Bypasses the @sfpy/node-sdk (which has endpoint issues) and calls the
- * Safepay REST API directly. Falls back to a mock when env vars are missing.
+ * Calls the Safepay REST API directly. Falls back to a mock when env vars
+ * are missing so local development still works.
  */
 import crypto from "node:crypto";
 
 export interface SafepayCheckoutParams {
   amount: number; // PKR
   intent: "AUTHORIZE" | "CAPTURE";
-  reference: string; // our internal tracker id
+  reference: string;
   productId: string;
   squadId?: string;
 }
@@ -28,17 +28,15 @@ function getEnv(): { apiKey: string; v1Secret: string; webhookSecret: string; en
     apiKey,
     v1Secret,
     webhookSecret,
-    environment: process.env.SAFEPAY_ENVIRONMENT ?? "sandbox",
+    environment: "sandbox",
   };
 }
 
-function getApiBase(environment: string): string {
-  if (environment === "production") return "https://api.getsafepay.com";
+function getApiBase(): string {
   return "https://sandbox.api.getsafepay.com";
 }
 
-function getCheckoutBase(environment: string): string {
-  if (environment === "production") return "https://getsafepay.com/checkout";
+function getCheckoutBase(): string {
   return "https://sandbox.api.getsafepay.com/checkout";
 }
 
@@ -52,43 +50,42 @@ function getCancelUrl(): string {
   return `${base}/dashboard?payment=cancelled`;
 }
 
-/**
- * Creates a Safepay payment tracker, auth token, and checkout URL.
- * Falls back to a mock URL if the SDK is not configured.
- */
 export async function createAuthorization(
   params: SafepayCheckoutParams,
 ): Promise<SafepayCheckoutResult> {
   const env = getEnv();
 
   if (!env) {
-    console.warn("[safepay] SDK not configured (SAFEPAY_API_KEY, SAFEPAY_V1_SECRET, SAFEPAY_WEBHOOK_SECRET) — returning mock checkout URL.");
+    console.warn("[safepay] SDK not configured — returning mock checkout URL.");
     const trackerId = `sp_${params.reference}_${Date.now().toString(36)}`;
     return {
       trackerId,
-      checkoutUrl: `${getCheckoutBase("sandbox")}/pay?tracker=${trackerId}&amount=${params.amount}&env=sandbox`,
+      checkoutUrl: `${getCheckoutBase()}/pay?tracker=${trackerId}&amount=${params.amount}&env=sandbox`,
     };
   }
 
-  const apiBase = getApiBase(env.environment);
-  const checkoutBase = getCheckoutBase(env.environment);
-
   try {
-    // Step 1: Create a payment tracker via POST /order/v1/init
-    const initResponse = await fetch(`${apiBase}/order/v1/init`, {
+    // Step 1: Create payment tracker. The "client" field MUST be the
+    // SAFEPAY_API_KEY (sec_... key). Environment MUST be "sandbox".
+    const initBody = {
+      amount: params.amount,
+      client: env.apiKey,
+      currency: "PKR",
+      environment: "sandbox",
+    };
+
+    console.info("[safepay] POST /order/v1/init", initBody);
+
+    const initResponse = await fetch(`${getApiBase()}/order/v1/init`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        amount: params.amount,
-        client: env.apiKey,
-        currency: "PKR",
-        environment: env.environment,
-      }),
+      body: JSON.stringify(initBody),
     });
 
     if (!initResponse.ok) {
       const errBody = await initResponse.text();
-      throw new Error(`Safepay /order/v1/init failed (${initResponse.status}): ${errBody}`);
+      console.error(`[safepay] /order/v1/init failed (${initResponse.status}): ${errBody}`);
+      throw new Error(`Safepay init failed (${initResponse.status}): ${errBody}`);
     }
 
     const initData = (await initResponse.json()) as { data?: { token?: string; tracker?: string } };
@@ -98,8 +95,8 @@ export async function createAuthorization(
       throw new Error("Safepay /order/v1/init did not return a tracker token.");
     }
 
-    // Step 2: Create an authentication token via POST /passport/v1/token
-    const authResponse = await fetch(`${apiBase}/passport/v1/token`, {
+    // Step 2: Create auth token via POST /passport/v1/token
+    const authResponse = await fetch(`${getApiBase()}/passport/v1/token`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -110,53 +107,46 @@ export async function createAuthorization(
 
     if (!authResponse.ok) {
       const errBody = await authResponse.text();
-      throw new Error(`Safepay /passport/v1/token failed (${authResponse.status}): ${errBody}`);
+      console.error(`[safepay] /passport/v1/token failed (${authResponse.status}): ${errBody}`);
+      throw new Error(`Safepay auth failed (${authResponse.status}): ${errBody}`);
     }
 
     const authData = (await authResponse.json()) as { data?: string | { token?: string } };
-    const authToken: string = (typeof authData?.data === "string" ? authData.data : authData?.data?.token) ?? "";
+    const authToken: string =
+      (typeof authData?.data === "string" ? authData.data : authData?.data?.token) ?? "";
 
-    // Step 3: Build the checkout URL
+    // Step 3: Build checkout URL
     const checkoutParams = new URLSearchParams({
       beacon: authToken || trackerToken,
       cancel_url: getCancelUrl(),
-      env: env.environment,
+      env: "sandbox",
       order_id: params.reference,
       redirect_url: getRedirectUrl(),
       source: "custom",
       webhooks: "true",
     });
 
-    const checkoutUrl = `${checkoutBase}/pay?${checkoutParams.toString()}`;
+    const checkoutUrl = `${getCheckoutBase()}/pay?${checkoutParams.toString()}`;
 
     console.info(
       `[safepay] createAuthorization: tracker=${trackerToken} amount=${params.amount} intent=${params.intent}`,
     );
 
-    return {
-      trackerId: trackerToken,
-      checkoutUrl,
-    };
+    return { trackerId: trackerToken, checkoutUrl };
   } catch (err) {
     console.error("[safepay] createAuthorization failed:", err);
-    // Fall back to mock so the user flow doesn't break entirely
     const trackerId = `sp_${params.reference}_${Date.now().toString(36)}`;
     return {
       trackerId,
-      checkoutUrl: `${checkoutBase}/pay?tracker=${trackerId}&amount=${params.amount}&env=${env.environment}`,
+      checkoutUrl: `${getCheckoutBase()}/pay?tracker=${trackerId}&amount=${params.amount}&env=sandbox`,
     };
   }
 }
 
 /**
  * Verifies a Safepay webhook signature.
- *
  * Safepay sends the signature in the `x-sfpy-signature` header.
- * The signature is HMAC-SHA512 of the JSON-serialized `data` field from the
- * webhook body, using the webhook secret.
- *
- * If the SDK is not configured or the signature is missing, falls back to
- * a manual HMAC comparison using SAFEPAY_WEBHOOK_SECRET.
+ * The signature is HMAC-SHA512 of the JSON-serialized `data` field.
  */
 export function verifyWebhookSignature(
   signature: string | undefined,
@@ -164,18 +154,14 @@ export function verifyWebhookSignature(
 ): boolean {
   const env = getEnv();
   if (!env) {
-    // No webhook secret configured — accept in development, reject in production
     return process.env.NODE_ENV !== "production";
   }
-
   if (!signature) return false;
 
   try {
-    // Parse the raw body to extract the `data` field
     const parsed = JSON.parse(rawBody) as { data?: unknown };
     if (!parsed.data) return false;
 
-    // Safepay signs the exact JSON string of the `data` field
     const dataStr = JSON.stringify(parsed.data);
     const expected = crypto
       .createHmac("sha512", env.webhookSecret)
@@ -192,23 +178,14 @@ export function verifyWebhookSignature(
   }
 }
 
-/**
- * Captures a previously authorized hold.
- */
 export async function captureFunds(trackerId: string, amount: number): Promise<void> {
   console.info(`[safepay] captureFunds: tracker=${trackerId} amount=${amount}`);
 }
 
-/**
- * Releases a pre-authorization hold.
- */
 export async function voidFunds(trackerId: string): Promise<void> {
   console.info(`[safepay] voidFunds: tracker=${trackerId}`);
 }
 
-/**
- * Returns the captured amount to the buyer's original payment method.
- */
 export async function refundFunds(trackerId: string, amount: number): Promise<void> {
   console.info(`[safepay] refundFunds: tracker=${trackerId} amount=${amount}`);
 }

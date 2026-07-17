@@ -231,6 +231,8 @@ export const registerSupplierApplication = asyncHandler(async (req: Request, res
     contactVerification: { emailVerified: false, phoneVerified: false },
     passwordHash: hash,
     passwordSalt: salt,
+    whatsappOtp: code,
+    otpExpiresAt: expiresAt,
     supplierDetails: {
       companyName: businessName.trim(),
       contactPerson: businessName.trim(),

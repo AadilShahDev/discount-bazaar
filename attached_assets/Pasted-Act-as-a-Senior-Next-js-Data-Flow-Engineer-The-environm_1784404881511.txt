@@ -1,0 +1,46 @@
+Act as a Senior Next.js Data Flow Engineer.
+
+The environment variables are fully configured and the backend is successfully generating the Safepay tracker and authToken. However, the frontend is still passing authToken={undefined} to the <SafepayCardAtom> component, which causes Safepay's API to reject the request with a 500 error, ultimately triggering React Error #31.
+
+You incorrectly skipped the data extraction audit in the previous step. We must trace and fix the exact data pipeline from the backend controller to the frontend component.
+
+Please execute the following strict audit and fix:
+
+Step 1: Audit the Backend Controller
+Open src/controllers/escrowController.ts (or wherever /api/escrow/checkout is handled).
+
+Verify that the JSON response payload explicitly includes authToken alongside the trackerId (e.g., res.status(200).json({ data: { trackerId, checkoutUrl, authToken } })). Add it if it is missing.
+
+Step 2: Audit the Frontend API Fetcher
+Open web/lib/api.ts (or wherever initiateEscrowCheckout is defined).
+
+Ensure the typescript interface EscrowCheckoutResult includes authToken: string.
+
+Ensure the fetch function successfully extracts and returns the authToken from the backend's JSON response.
+
+Step 3: Fix the Checkout Components (The Strict Guard)
+Open web/components/product/DualCheckout.tsx and web/components/cart/CartDrawer.tsx.
+
+Ensure the state management stores the authToken when the checkout is initiated:
+const [authToken, setAuthToken] = useState<string | null>(null);
+
+Update the handlePaySecurely (or equivalent) function to save it: setAuthToken(result.authToken);
+
+CRITICAL: Pass authToken={authToken} to the <SafepayCardAtom> component.
+
+Step 4: The Visual Failsafe
+Open web/components/checkout/SafepayCardAtom.tsx.
+
+At the very top of the component, add this exact visual failsafe so we stop flying blind:
+
+TypeScript
+if (!tracker || !authToken) {
+  return (
+    <div className="w-full min-h-[150px] p-4 bg-red-50 border border-red-500 text-red-700 rounded-lg flex flex-col items-center justify-center text-center">
+      <span className="font-bold mb-2">Missing Payment Security Tokens</span>
+      <span className="text-sm font-mono">Tracker: {tracker ? 'Received' : 'MISSING'}</span>
+      <span className="text-sm font-mono">AuthToken: {authToken ? 'Received' : 'MISSING'}</span>
+    </div>
+  );
+}
+Do not skip this. If the frontend state drops the auth token, the web component must visually report it on the screen instead of attempting to mount and crashing React.

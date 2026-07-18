@@ -55,6 +55,23 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
     },
     ref,
   ) {
+    // Visual failsafe — renders a diagnostic banner instead of attempting to
+    // mount the payment widget with incomplete data. This surfaces token
+    // pipeline failures immediately rather than letting them crash silently.
+    if (!tracker || !authToken) {
+      return (
+        <div className="flex w-full min-h-[150px] flex-col items-center justify-center rounded-lg border border-red-400 bg-red-50 p-4 text-center">
+          <span className="text-sm font-bold text-red-700">Missing Payment Security Tokens</span>
+          <span className="mt-1 font-mono text-xs text-red-600">
+            Tracker: {tracker ? "✓ Received" : "✗ MISSING"}
+          </span>
+          <span className="font-mono text-xs text-red-600">
+            AuthToken: {authToken ? "✓ Received" : "✗ MISSING"}
+          </span>
+        </div>
+      );
+    }
+
     const containerRef = useRef<HTMLDivElement>(null);
 
     // Refs to the live DOM elements — updated after injection.

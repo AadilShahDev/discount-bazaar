@@ -1,15 +1,17 @@
 "use client";
 
-// @sfpy/atoms exports React wrappers (dist/react/index.js) as its only ESM
-// entry point. There is no separate ESM bundle that registers the custom
-// elements — the React components ARE the integration layer.
-//
-// This file is loaded exclusively client-side via next/dynamic({ ssr: false })
-// in DualCheckout.tsx and CartDrawer.tsx, so the library's browser-only code
-// (iframe injection, window references) never runs during SSR.
+// The @sfpy/atoms React wrappers (CardCapture / PayerAuthentication) crash
+// with React error #31 when the library internally tries to render an Error
+// object as a JSX child — a bug inside the compiled NPM package that we
+// cannot patch. The IIFE global bundle (dist/components/index.global.js)
+// registers the same logic as real Custom Elements without any React
+// involvement, so we serve it from /public and inject the elements via
+// Vanilla DOM. This file preserves the exact same public interface
+// (SafepayCardAtomHandle + named SafepayCardAtom export) so both parent
+// components (DualCheckout, CartDrawer) need zero changes.
+
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { CardCapture, PayerAuthentication, type Environment } from "@sfpy/atoms";
-import "@sfpy/atoms/styles";
+import Script from "next/script";
 
 export interface SafepayCardAtomHandle {
   submit: () => void;
@@ -18,27 +20,20 @@ export interface SafepayCardAtomHandle {
   clear: () => void;
 }
 
-interface PayerAuthState {
-  deviceDataCollectionJWT: string;
-  deviceDataCollectionURL: string;
-}
-
 interface SafepayCardAtomProps {
   tracker: string;
   authToken: string;
-  environment?: Environment | string;
+  environment?: string;
   amount: number;
   onReady?: () => void;
   onValidated?: (data: { bin: string; lastFour: string; cardType?: string }) => void;
   onError?: (error: string) => void;
-  onPaymentSuccess?: (data: any) => void;
-  onPaymentFailure?: (data: any) => void;
+  onPaymentSuccess?: (data: unknown) => void;
+  onPaymentFailure?: (data: unknown) => void;
 }
 
-// Module-level constant — reference never changes between renders, so
-// @sfpy/atoms will never treat a new object identity as a reason to
-// re-mount the internal iframe.
-const INPUT_STYLE: React.CSSProperties = {
+// Module-level constant so its object identity never changes between renders.
+const INPUT_STYLE = {
   fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
   color: "#111827",
   fontSize: "16px",
@@ -60,178 +55,201 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
     },
     ref,
   ) {
-    const cardRef = useRef<any>(null);
-    const payerAuthRef = useRef<any>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
 
-    const [isSafeToMount, setIsSafeToMount] = useState(false);
+    // Refs to the live DOM elements — updated after injection.
+    const cardElRef = useRef<HTMLElement & Record<string, unknown>>(null);
+
+    // Latest-value refs for all prop callbacks — updated synchronously on
+    // every render so the web component always calls the current version
+    // without us needing to re-inject the element when a callback changes.
+    const cbRefs = useRef({ onReady, onValidated, onError, onPaymentSuccess, onPaymentFailure });
+    cbRefs.current = { onReady, onValidated, onError, onPaymentSuccess, onPaymentFailure };
+
+    const [scriptLoaded, setScriptLoaded] = useState(false);
     const [isSubmitting, setSubmitting] = useState(false);
     const [validationError, setValidationError] = useState<string | null>(null);
-    const [payerAuth, setPayerAuth] = useState<PayerAuthState | null>(null);
+    const [payerAuthActive, setPayerAuthActive] = useState(false);
 
-    // Delay mounting by one tick so the parent DOM is fully painted and stable
-    // before the iframe-injecting Web Component wrapper initialises. Without
-    // this, React 18 Strict Mode's double-mount can destroy the iframe context
-    // on the first mount before the second mount recreates it.
-    useEffect(() => {
-      const timer = setTimeout(() => setIsSafeToMount(true), 50);
-      return () => clearTimeout(timer);
-    }, []);
-
+    // Wire the forwardRef to the web component's imperative API.
     useImperativeHandle(
       ref,
       () => ({
-        submit: () => cardRef.current?.submit(),
-        validate: () => cardRef.current?.validate(),
-        fetchValidity: () => cardRef.current?.fetchValidity?.() ?? Promise.resolve(false),
-        clear: () => cardRef.current?.clear?.(),
+        submit: () => (cardElRef.current as any)?.submit?.(),
+        validate: () => (cardElRef.current as any)?.validate?.(),
+        fetchValidity: () =>
+          (cardElRef.current as any)?.fetchValidity?.() ?? Promise.resolve(false),
+        clear: () => (cardElRef.current as any)?.clear?.(),
       }),
       [],
     );
 
-    // All handlers are wrapped in useCallback so their identity stays stable
-    // across parent re-renders. @sfpy/atoms watches callback props in a
-    // useEffect dependency array internally — unstable references would
-    // re-initialise the iframe on every parent state update, causing an
-    // infinite re-render loop that trips the Error Boundary.
-    const handleReady = useCallback(() => {
-      onReady?.();
-    }, [onReady]);
+    // Stable wrappers — created once, delegate to cbRefs so they never cause
+    // the injection effect to re-run when a parent re-renders.
+    const stableReady = useCallback(() => {
+      cbRefs.current.onReady?.();
+    }, []);
 
-    const handleValidated = useCallback(
-      (data: { bin: string; lastFour: string; cardType?: string }) => {
-        setValidationError(null);
-        onValidated?.(data);
-      },
-      [onValidated],
-    );
+    const stableValidated = useCallback((data: { bin: string; lastFour: string; cardType?: string }) => {
+      setValidationError(null);
+      cbRefs.current.onValidated?.(data);
+    }, []);
 
-    const handleError = useCallback(
-      (error: string) => {
-        setValidationError(error);
+    const stableError = useCallback((error: string) => {
+      setValidationError(error);
+      setSubmitting(false);
+      cbRefs.current.onError?.(error);
+    }, []);
+
+    const stableProceedToAuth = useCallback((data: unknown) => {
+      const d = data as Record<string, string>;
+      const jwt =
+        d?.deviceDataCollectionJWT ??
+        d?.device_data_collection_jwt ??
+        d?.accessToken ??
+        "";
+      const url =
+        d?.deviceDataCollectionURL ??
+        d?.device_data_collection_url ??
+        d?.actionUrl ??
+        "";
+
+      if (!jwt || !url) {
+        // No 3DS challenge needed — treat as immediate success.
         setSubmitting(false);
-        onError?.(error);
-      },
-      [onError],
-    );
+        cbRefs.current.onPaymentSuccess?.(data);
+        return;
+      }
 
-    const handleProceedToAuthentication = useCallback(
-      (data: any) => {
-        const jwt =
-          data?.deviceDataCollectionJWT ??
-          data?.device_data_collection_jwt ??
-          data?.accessToken ??
-          "";
-        const url =
-          data?.deviceDataCollectionURL ??
-          data?.device_data_collection_url ??
-          data?.actionUrl ??
-          "";
+      // Reveal the payer-auth element and hand it the 3DS params.
+      const authEl = containerRef.current?.querySelector("safepay-payer-auth-atom") as any;
+      if (authEl) {
+        authEl.deviceDataCollectionJWT = jwt;
+        authEl.deviceDataCollectionURL = url;
+        authEl.style.display = "";
+      }
+      setPayerAuthActive(true);
+    }, []);
 
-        if (!jwt || !url) {
-          // No 3DS challenge required — treat as immediate success.
-          setSubmitting(false);
-          onPaymentSuccess?.(data);
-          return;
-        }
+    const stableAuthSuccess = useCallback((data: unknown) => {
+      setPayerAuthActive(false);
+      setSubmitting(false);
+      cbRefs.current.onPaymentSuccess?.(data);
+    }, []);
 
-        setPayerAuth({ deviceDataCollectionJWT: jwt, deviceDataCollectionURL: url });
-      },
-      [onPaymentSuccess],
-    );
+    const stableAuthFailure = useCallback((data: unknown) => {
+      setPayerAuthActive(false);
+      setSubmitting(false);
+      cbRefs.current.onPaymentFailure?.(data);
+    }, []);
 
-    const handlePayerAuthSuccess = useCallback(
-      (data: any) => {
-        setPayerAuth(null);
-        setSubmitting(false);
-        onPaymentSuccess?.(data);
-      },
-      [onPaymentSuccess],
-    );
+    // Inject the web components once the IIFE global bundle is loaded and
+    // both required tokens are present. Re-runs only when those three values
+    // change — never when a callback prop changes.
+    useEffect(() => {
+      if (!scriptLoaded || !tracker || !authToken || !containerRef.current) return;
 
-    const handlePayerAuthFailure = useCallback(
-      (data: any) => {
-        setPayerAuth(null);
-        setSubmitting(false);
-        onPaymentFailure?.(data);
-      },
-      [onPaymentFailure],
-    );
+      const container = containerRef.current;
+      // Clear any previous mounts (Strict Mode double-invoke safety).
+      container.innerHTML = "";
+
+      // ── Card Capture ──────────────────────────────────────────────────────
+      const cardEl = document.createElement("safepay-card-atom") as any;
+      cardEl.environment = environment;
+      cardEl.tracker = tracker;
+      cardEl.authToken = authToken;
+      cardEl.inputStyle = INPUT_STYLE;
+      // Assign stable wrappers as JS properties (Stencil property callbacks).
+      cardEl.onReady = stableReady;
+      cardEl.onValidated = stableValidated;
+      cardEl.onError = stableError;
+      cardEl.onProceedToAuthentication = stableProceedToAuth;
+      (cardElRef as React.MutableRefObject<any>).current = cardEl;
+      container.appendChild(cardEl);
+
+      // ── Payer Authentication (3DS) ────────────────────────────────────────
+      const authEl = document.createElement("safepay-payer-auth-atom") as any;
+      authEl.environment = environment;
+      authEl.tracker = tracker;
+      authEl.authToken = authToken;
+      authEl.onPayerAuthenticationSuccess = stableAuthSuccess;
+      authEl.onPayerAuthenticationFailure = stableAuthFailure;
+      // Hidden until onProceedToAuthentication fires.
+      authEl.style.display = "none";
+      container.appendChild(authEl);
+
+      return () => {
+        (cardElRef as React.MutableRefObject<any>).current = null;
+        container.innerHTML = "";
+      };
+    }, [
+      scriptLoaded,
+      tracker,
+      authToken,
+      environment,
+      stableReady,
+      stableValidated,
+      stableError,
+      stableProceedToAuth,
+      stableAuthSuccess,
+      stableAuthFailure,
+    ]);
 
     async function handlePayClick() {
-      if (!cardRef.current) return;
+      const cardEl = cardElRef.current as any;
+      if (!cardEl) return;
       setValidationError(null);
       setSubmitting(true);
       try {
-        const isValid = await cardRef.current.fetchValidity();
+        const isValid = await cardEl.fetchValidity?.();
         if (!isValid) {
-          cardRef.current.validate();
+          cardEl.validate?.();
           setSubmitting(false);
           return;
         }
-        cardRef.current.submit();
+        cardEl.submit?.();
       } catch (err) {
         setSubmitting(false);
-        handleError(err instanceof Error ? err.message : "Payment could not be processed.");
+        stableError(err instanceof Error ? err.message : "Payment could not be processed.");
       }
     }
 
-    // Render a structural placeholder while waiting for the mount-delay tick,
-    // or if required tokens are not yet available.
-    if (!isSafeToMount || !tracker || !authToken) {
-      return (
-        <div className="w-full min-h-[150px] animate-pulse rounded-lg bg-gray-50" />
-      );
-    }
-
     return (
-      <div className="safepay-atoms-root">
-        {payerAuth ? (
-          <div className="w-full min-h-[150px] relative">
-            <PayerAuthentication
-              environment={environment}
-              tracker={tracker}
-              authToken={authToken}
-              deviceDataCollectionJWT={payerAuth.deviceDataCollectionJWT}
-              deviceDataCollectionURL={payerAuth.deviceDataCollectionURL}
-              onPayerAuthenticationSuccess={handlePayerAuthSuccess}
-              onPayerAuthenticationFailure={handlePayerAuthFailure}
-              imperativeRef={payerAuthRef}
-            />
-          </div>
-        ) : (
-          <>
-            <div className="w-full min-h-[150px] relative">
-              <CardCapture
-                environment={environment}
-                authToken={authToken}
-                tracker={tracker}
-                validationEvent="submit"
-                inputStyle={INPUT_STYLE}
-                onReady={handleReady}
-                onValidated={handleValidated}
-                onError={handleError}
-                onProceedToAuthentication={handleProceedToAuthentication}
-                imperativeRef={cardRef}
-              />
-            </div>
+      <>
+        {/* Serve the IIFE global bundle from /public — no CDN dependency. */}
+        <Script
+          src="/sfpy-atoms.js"
+          strategy="afterInteractive"
+          onLoad={() => setScriptLoaded(true)}
+        />
 
-            {validationError && (
-              <p className="mt-3 text-xs text-red-600" role="alert">
-                {validationError}
-              </p>
+        <div className="safepay-atoms-root">
+          <div ref={containerRef} className="w-full min-h-[150px] relative">
+            {!scriptLoaded && (
+              <div className="flex w-full min-h-[150px] animate-pulse items-center justify-center rounded-lg bg-gray-50 text-sm text-gray-400">
+                Connecting to secure server…
+              </div>
             )}
+          </div>
 
+          {validationError && !payerAuthActive && (
+            <p className="mt-3 text-xs text-red-600" role="alert">
+              {validationError}
+            </p>
+          )}
+
+          {!payerAuthActive && (
             <button
               type="button"
               onClick={handlePayClick}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !scriptLoaded}
               className="mt-4 w-full rounded-full bg-oceanic px-6 py-3.5 text-sm font-bold text-white shadow-sm transition hover:bg-oceanic-dark disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSubmitting ? "Processing…" : `Pay PKR ${amount.toLocaleString("en-PK")}`}
             </button>
-          </>
-        )}
-      </div>
+          )}
+        </div>
+      </>
     );
   },
 );

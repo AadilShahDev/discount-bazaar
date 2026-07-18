@@ -1,0 +1,109 @@
+Act as a Senior Next.js and Web Component Expert.
+
+The Error Boundary successfully caught the error, and the console log has revealed the exact issue: Error: Minified React error #31.
+This is a fatal bug inside Safepay's official React wrapper (CardCapture). When the wrapper encounters a minor internal warning, it accidentally attempts to render the Javascript Error object as JSX, which instantly triggers React Error #31 (Objects are not valid as a React child) and crashes the component.
+
+Since the bug is inside the compiled NPM package, we cannot use CardCapture or PayerAuthentication from @sfpy/atoms in React. We must bypass the React wrappers entirely by loading the raw Web Component bundle directly from Safepay's CDN.
+
+Please strictly execute this final rewrite of web/components/checkout/SafepayCardAtom.tsx:
+
+Step 1: Replace Imports and Add Script Loading
+Remove the imports for { CardCapture, PayerAuthentication } and @sfpy/atoms entirely. We are abandoning the NPM package export.
+
+Import Script from next/script.
+
+We will load Safepay's official global bundle via CDN and use Vanilla DOM injection to mount the elements safely.
+
+Step 2: Implement the CDN & Vanilla Injection
+Replace the entire file contents of SafepayCardAtom.tsx with this exact code:
+
+TypeScript
+"use client";
+import React, { useEffect, useRef, useState } from 'react';
+import Script from 'next/script';
+
+export default function SafepayCardAtom({ 
+  tracker, 
+  authToken, 
+  imperativeRef, 
+  onReady, 
+  onValidated, 
+  onError, 
+  onProceedToAuthentication 
+}: any) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scriptLoaded, setScriptLoaded] = useState(false);
+
+  useEffect(() => {
+    // Only inject when the CDN script is loaded and tokens are ready
+    if (!scriptLoaded || !tracker || !authToken || !containerRef.current) return;
+
+    const container = containerRef.current;
+    container.innerHTML = ''; // Clear strict-mode duplicates
+
+    // 1. Create the raw Web Component directly
+    const cardAtom = document.createElement('safepay-card-atom') as any;
+    
+    // 2. Assign JS properties (camelCase, as per Safepay docs)
+    cardAtom.environment = 'sandbox';
+    cardAtom.tracker = tracker;
+    cardAtom.authToken = authToken;
+    cardAtom.inputStyle = { 
+      fontFamily: 'Inter, system-ui, sans-serif', 
+      fontSize: '16px', 
+      color: '#111827' 
+    };
+
+    // 3. Attach callbacks as properties
+    cardAtom.onReady = onReady;
+    cardAtom.onValidated = (e: any) => onValidated?.(e);
+    cardAtom.onError = (e: any) => onError?.(e);
+
+    // 4. Connect imperative methods
+    if (imperativeRef) {
+      imperativeRef.current = {
+        submit: () => cardAtom.submit(),
+        validate: () => cardAtom.validate(),
+        fetchValidity: () => cardAtom.fetchValidity(),
+      };
+    }
+
+    // 5. Create Payer Authentication Atom
+    const authAtom = document.createElement('safepay-payer-auth-atom') as any;
+    authAtom.environment = 'sandbox';
+    authAtom.tracker = tracker;
+    authAtom.authToken = authToken;
+    if (onProceedToAuthentication) {
+      authAtom.onProceedToAuthentication = onProceedToAuthentication;
+    }
+
+    // 6. Inject natively into the DOM
+    container.appendChild(cardAtom);
+    container.appendChild(authAtom);
+
+    return () => {
+      container.innerHTML = '';
+    };
+  }, [scriptLoaded, tracker, authToken]); // Intentionally omitting callbacks to prevent re-renders
+
+  return (
+    <>
+      <Script 
+        src="https://cdn.jsdelivr.net/npm/@sfpy/atoms@latest/dist/components/index.global.js" 
+        strategy="afterInteractive"
+        onLoad={() => setScriptLoaded(true)}
+      />
+      <div ref={containerRef} className="w-full min-h-[150px] relative">
+        {!scriptLoaded && (
+          <div className="w-full h-full min-h-[150px] flex items-center justify-center text-sm text-gray-500 animate-pulse">
+            Connecting to secure server...
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+Step 3: Verification
+Ensure package.json still has @sfpy/atoms if it's used elsewhere for TS types, but this specific component now relies strictly on the next/script CDN. Do not alter the Error Boundary or the parent components; they are perfectly configured.
+
+Apply this immediately.

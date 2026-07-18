@@ -1,0 +1,81 @@
+Act as a Senior Next.js and Web Component Expert.
+
+Our Vanilla JS injection successfully stopped the React Error Boundary from crashing, but the <safepay-card-atom> is rendering as a blank space. This is a property vs. attribute hydration failure. Web Components built with StencilJS strictly require kebab-case HTML attributes (e.g., auth-token) to mount their internal iframes. Directly mutating DOM properties (element.authToken = ...) fails to trigger the component's internal render lifecycle.
+
+We must use React's dangerouslySetInnerHTML to force the browser's native C++ HTML parser to initialize the Web Component perfectly with string attributes.
+
+Please strictly execute this rewrite of web/components/checkout/SafepayCardAtom.tsx:
+
+Step 1: Rewrite SafepayCardAtom with dangerouslySetInnerHTML
+Replace the entire contents of the file with this exact code:
+
+TypeScript
+"use client";
+import React, { useEffect, useRef } from 'react';
+import '@sfpy/atoms'; // Ensures custom elements are registered
+
+export default function SafepayCardAtom({ 
+  tracker, 
+  authToken, 
+  imperativeRef, 
+  onReady,
+  onValidated,
+  onError
+}: any) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Grab the natively injected element
+    const cardAtom = container.querySelector('safepay-card-atom');
+    if (!cardAtom) return;
+
+    // 1. Map native DOM events to React callbacks
+    const handleReady = (e: any) => onReady?.(e);
+    const handleValidated = (e: any) => onValidated?.(e.detail || e);
+    const handleError = (e: any) => onError?.(e.detail || e);
+
+    cardAtom.addEventListener('ready', handleReady);
+    cardAtom.addEventListener('validated', handleValidated);
+    cardAtom.addEventListener('error', handleError);
+
+    // 2. Connect the imperative ref so the external Pay button can trigger submission
+    if (imperativeRef) {
+      imperativeRef.current = {
+        submit: () => (cardAtom as any).submit(),
+      };
+    }
+
+    return () => {
+      cardAtom.removeEventListener('ready', handleReady);
+      cardAtom.removeEventListener('validated', handleValidated);
+      cardAtom.removeEventListener('error', handleError);
+    };
+  }, [tracker, authToken, imperativeRef, onReady, onValidated, onError]);
+
+  // Prevent rendering if escrow backend hasn't returned tokens yet
+  if (!tracker || !authToken) return null;
+
+  // By using string injection, we guarantee StencilJS reads the kebab-case attributes
+  const htmlString = `
+    <safepay-card-atom 
+      environment="sandbox" 
+      tracker="${tracker}" 
+      auth-token="${authToken}"
+    ></safepay-card-atom>
+  `;
+
+  return (
+    <div 
+      ref={containerRef}
+      className="w-full min-h-[150px] relative"
+      dangerouslySetInnerHTML={{ __html: htmlString }}
+    />
+  );
+}
+Step 2: Verification
+Ensure that the parent components (DualCheckout.tsx / CartDrawer.tsx) are still importing this file using next/dynamic with ssr: false.
+
+Please apply this fix immediately.

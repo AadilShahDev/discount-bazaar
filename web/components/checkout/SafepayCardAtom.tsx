@@ -7,7 +7,7 @@
 // This file is loaded exclusively client-side via next/dynamic({ ssr: false })
 // in DualCheckout.tsx and CartDrawer.tsx, so the library's browser-only code
 // (iframe injection, window references) never runs during SSR.
-import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { CardCapture, PayerAuthentication, type Environment } from "@sfpy/atoms";
 import "@sfpy/atoms/styles";
 
@@ -63,9 +63,19 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
     const cardRef = useRef<any>(null);
     const payerAuthRef = useRef<any>(null);
 
+    const [isSafeToMount, setIsSafeToMount] = useState(false);
     const [isSubmitting, setSubmitting] = useState(false);
     const [validationError, setValidationError] = useState<string | null>(null);
     const [payerAuth, setPayerAuth] = useState<PayerAuthState | null>(null);
+
+    // Delay mounting by one tick so the parent DOM is fully painted and stable
+    // before the iframe-injecting Web Component wrapper initialises. Without
+    // this, React 18 Strict Mode's double-mount can destroy the iframe context
+    // on the first mount before the second mount recreates it.
+    useEffect(() => {
+      const timer = setTimeout(() => setIsSafeToMount(true), 50);
+      return () => clearTimeout(timer);
+    }, []);
 
     useImperativeHandle(
       ref,
@@ -163,6 +173,14 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
         setSubmitting(false);
         handleError(err instanceof Error ? err.message : "Payment could not be processed.");
       }
+    }
+
+    // Render a structural placeholder while waiting for the mount-delay tick,
+    // or if required tokens are not yet available.
+    if (!isSafeToMount || !tracker || !authToken) {
+      return (
+        <div className="w-full min-h-[150px] animate-pulse rounded-lg bg-gray-50" />
+      );
     }
 
     return (

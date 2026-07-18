@@ -1,0 +1,47 @@
+Act as a Senior Next.js Debugger and Web Component Specialist.
+
+Your diagnosis of the @sfpy/atoms export map was 100% correct, and restoring CardCapture and PayerAuthentication was the right architectural move. However, CardCapture is still throwing a fatal exception upon mounting, which is tripping the Error Boundary.
+
+This is typically caused by React 18 Strict Mode double-mounting the Web Component wrapper (which destroys the internal iframe context) OR unstable object references passed as props (like inputStyle) causing infinite internal re-renders.
+
+Please execute the following steps to expose the error and stabilize the mount lifecycle:
+
+Step 1: Log the Hidden Error
+Open the component that acts as the Error Boundary (likely CheckoutErrorBoundary.tsx or similar).
+
+Inside the componentDidCatch or getDerivedStateFromError method, add a glaring console log:
+console.error("SAFEPAY CRASH REASON:", error, errorInfo);
+
+We must be able to see the exact exception Safepay is throwing in the browser console.
+
+Step 2: Implement the "Strict Mode Defuser"
+We must isolate the CardCapture component from React's hydration and Strict Mode volatility.
+
+Open web/components/checkout/SafepayCardAtom.tsx.
+
+Move the inputStyle object completely outside the component function to guarantee its reference never changes, preventing re-render loops:
+
+JavaScript
+const SAFE_INPUT_STYLE = {
+  fontFamily: 'Inter, system-ui, sans-serif',
+  color: '#111827',
+  fontSize: '16px'
+};
+Implement a forced mount-delay. Web Components often crash if rendered synchronously during Next.js client hydration. Force it to wait one tick:
+
+JavaScript
+const [isSafeToMount, setIsSafeToMount] = useState(false);
+
+useEffect(() => {
+  // Delay mounting by 50ms to ensure the parent DOM is fully painted and stable
+  const timer = setTimeout(() => setIsSafeToMount(true), 50);
+  return () => clearTimeout(timer);
+}, []);
+
+// If not safe, render a structural placeholder matching the final Atom's height
+if (!isSafeToMount) {
+  return <div className="w-full min-h-[150px] animate-pulse bg-gray-50 rounded-lg"></div>;
+}
+Ensure tracker and authToken are valid truthy strings before returning <CardCapture/>.
+
+Please implement these stability fixes. If the component still trips the Error Boundary after this, review the browser console output from Step 1 and provide the exact SAFEPAY CRASH REASON string so we can address the specific prop or token rejection.

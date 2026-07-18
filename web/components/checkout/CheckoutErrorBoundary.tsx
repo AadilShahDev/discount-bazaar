@@ -27,8 +27,8 @@ export class CheckoutErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: unknown, info: { componentStack?: string }) {
-    // Log for observability without surfacing internals to users.
-    console.error("[CheckoutErrorBoundary] Payment widget error:", error, info?.componentStack);
+    // Prominent label so the exact crash reason is easy to find in DevTools.
+    console.error("SAFEPAY CRASH REASON:", error, info);
   }
 
   render() {

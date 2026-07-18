@@ -20,6 +20,7 @@ export interface SafepayCheckoutParams {
 export interface SafepayCheckoutResult {
   trackerId: string;
   checkoutUrl: string;
+  authToken: string;
 }
 
 let safepayClient: Safepay | null = null;
@@ -89,6 +90,7 @@ export async function createAuthorization(
     return {
       trackerId,
       checkoutUrl: `${getCheckoutBase()}/pay?tracker=${trackerId}&amount=${params.amount}&env=sandbox`,
+      authToken: `mock_auth_${Date.now().toString(36)}`,
     };
   }
 
@@ -106,9 +108,9 @@ export async function createAuthorization(
     }
     console.info(`[safepay] payment token received: ${trackerToken}`);
 
-    // Step 2: Create auth token (required by SDK flow but the render
-    // endpoint uses the tracker directly)
-    await client.authorization.create();
+    // Step 2: Create auth token (client secret) — required by Safepay Atoms
+    // to initialize the card capture iframe from the browser.
+    const authToken = await client.authorization.create();
     console.info(`[safepay] auth token received`);
 
     // Step 3: Build the hosted checkout URL using the render endpoint
@@ -121,7 +123,7 @@ export async function createAuthorization(
       `[safepay] createAuthorization: tracker=${trackerToken} amount=${params.amount} intent=${params.intent}`,
     );
 
-    return { trackerId: trackerToken, checkoutUrl };
+    return { trackerId: trackerToken, checkoutUrl, authToken };
   } catch (err) {
     console.error("[safepay] createAuthorization failed:", err);
 
@@ -131,6 +133,7 @@ export async function createAuthorization(
     return {
       trackerId,
       checkoutUrl: `${getCheckoutBase()}/pay?tracker=${trackerId}&amount=${params.amount}&env=sandbox`,
+      authToken: `mock_auth_${Date.now().toString(36)}`,
     };
   }
 }

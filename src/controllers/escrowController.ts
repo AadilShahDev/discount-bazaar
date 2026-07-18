@@ -85,7 +85,7 @@ export const initiateCheckout = asyncHandler(
     const holdAmount = Math.round(unitDeposit * quantity * 100) / 100;
     const reference = `p_${productId}_b_${buyerId}_${Date.now().toString(36)}`;
 
-    const { trackerId, checkoutUrl } = await createAuthorization({
+    const { trackerId, checkoutUrl, authToken } = await createAuthorization({
       amount: holdAmount,
       intent: "AUTHORIZE",
       reference,
@@ -94,10 +94,11 @@ export const initiateCheckout = asyncHandler(
     });
 
     res.status(200).json({
-      message: "Checkout initiated. Redirect the buyer to checkoutUrl to authorize the hold.",
+      message: "Checkout initiated. Render Safepay Atoms with trackerId + authToken to authorize the hold.",
       data: {
         trackerId,
         checkoutUrl,
+        authToken,
         holdAmount,
         unitDeposit,
         quantity,

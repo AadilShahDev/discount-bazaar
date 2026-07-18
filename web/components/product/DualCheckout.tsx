@@ -1,19 +1,22 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/AuthContext";
 import { useCart } from "@/lib/CartContext";
-import { getShippingAddress, initiateEscrowCheckout, saveShippingAddress } from "@/lib/api";
+import { getShippingAddress, initiateEscrowCheckout } from "@/lib/api";
 import { formatPKR, squadMaxDiscountPercent } from "@/lib/format";
 import type { Product, ShippingAddress, Squad } from "@/lib/types";
 import { ShippingAddressForm } from "@/components/checkout/ShippingAddressForm";
+import { SafepayCardAtom, type SafepayCardAtomHandle } from "@/components/checkout/SafepayCardAtom";
 
 type CheckoutStep = "idle" | "address" | "review" | "payment";
 
 export function DualCheckout({ product, activeSquad }: { product: Product; activeSquad: Squad | null }) {
   const { user, token, openLogin } = useAuth();
   const { addItem } = useCart();
+  const router = useRouter();
 
   const [quantity, setQuantity] = useState(1);
   const [added, setAdded] = useState(false);
@@ -24,9 +27,11 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
   const [address, setAddress] = useState<ShippingAddress | null>(user?.shippingAddress ?? null);
   const [isInitiating, setInitiating] = useState(false);
 
-  // Safepay iframe modal state
-  const [isPaymentModalOpen, setPaymentModalOpen] = useState(false);
-  const [safepayCheckoutUrl, setSafepayCheckoutUrl] = useState<string | null>(null);
+  // Inline Safepay Atoms payment state
+  const [paymentTracker, setPaymentTracker] = useState<string | null>(null);
+  const [paymentAuthToken, setPaymentAuthToken] = useState<string | null>(null);
+  const [paymentHoldAmount, setPaymentHoldAmount] = useState<number>(0);
+  const cardAtomRef = useRef<SafepayCardAtomHandle>(null);
 
   const { marketAnchorPrice, maxSquadDiscount } = product.pricing;
   const targetMembers = activeSquad?.targetMembers ?? product.maxSquadMembers;
@@ -38,9 +43,6 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
 
   const depositPct = product.deposit_percentage ?? 10;
   const totalDeposit = Math.round(subtotal * (depositPct / 100));
-  // COD balance is only the remaining product subtotal after the upfront
-  // deposit. Delivery charges are billed separately by the courier at
-  // the door, so they are NOT folded into the COD amount shown here.
   const remainingCOD = Math.max(0, subtotal - totalDeposit);
   const progress = Math.min(100, Math.round((currentMembers / targetMembers) * 100));
   const isFull = currentMembers >= targetMembers;
@@ -58,7 +60,6 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
 
     setError(null);
 
-    // Step 2 — Address check: fetch latest from backend, show form if missing
     if (!user.shippingAddress && !address) {
       try {
         const fetched = await getShippingAddress(token);
@@ -74,7 +75,6 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
       return;
     }
 
-    // Already has address — go straight to review
     setStep("review");
   }
 
@@ -83,7 +83,7 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
     setStep("review");
   }
 
-  // ─── Step 4: Payment — initiate Safepay escrow and open iframe ─────
+  // ─── Step 3: Payment — initiate Safepay escrow, render Atoms inline ─
   async function handlePaySecurely() {
     if (!token) return;
 
@@ -91,15 +91,10 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
     setInitiating(true);
     try {
       const checkout = await initiateEscrowCheckout(product._id, activeSquad?._id, token, quantity);
-
-      // Construct the Safepay embedded checkout URL using the tracker
-      const baseUrl = "https://sandbox.api.getsafepay.com/checkout/pay";
-      const successUrl = `${window.location.origin}/dashboard?success=true`;
-      const cancelUrl = `${window.location.origin}/products/${product._id}`;
-      const checkoutUrl = `${baseUrl}?env=sandbox&beacon=${encodeURIComponent(checkout.trackerId)}&source=custom&order_id=${encodeURIComponent(checkout.trackerId)}&redirect_url=${encodeURIComponent(successUrl)}&cancel_url=${encodeURIComponent(cancelUrl)}`;
-
-      setSafepayCheckoutUrl(checkoutUrl);
-      setPaymentModalOpen(true);
+      setPaymentTracker(checkout.trackerId);
+      setPaymentAuthToken(checkout.authToken);
+      setPaymentHoldAmount(checkout.holdAmount);
+      setStep("payment");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start the Squad checkout.");
     } finally {
@@ -107,10 +102,17 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
     }
   }
 
-  function closePaymentModal() {
-    setPaymentModalOpen(false);
-    setSafepayCheckoutUrl(null);
-    setStep("review");
+  function handlePaymentSuccess() {
+    setStep("idle");
+    setPaymentTracker(null);
+    setPaymentAuthToken(null);
+    router.push(`/dashboard?success=true`);
+  }
+
+  function handlePaymentFailure(data: any) {
+    setError(
+      (data?.error ?? data?.errorMessage ?? "Payment failed. Please try a different card.") as string,
+    );
   }
 
   // ─── Render ────────────────────────────────────────────────────────
@@ -231,9 +233,18 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
         </div>
       </div>
 
-      {/* ─── Address Modal ─────────────────────────────────────────── */}
+      {/* ─── Inline Address Form ────────────────────────────────────── */}
       {step === "address" && (
-        <Modal onClose={() => setStep("idle")} title="Shipping Address" maxWidth="max-w-lg">
+        <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900">Shipping Address</h3>
+            <button
+              onClick={() => setStep("idle")}
+              className="text-xs font-medium text-slate-500 hover:text-slate-700"
+            >
+              Cancel
+            </button>
+          </div>
           <p className="mb-4 text-xs text-slate-500">
             We need your delivery address to calculate shipping and finalize your order.
           </p>
@@ -243,12 +254,22 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
             onSave={handleAddressSaved}
             onCancel={() => setStep("idle")}
           />
-        </Modal>
+        </div>
       )}
 
-      {/* ─── Review / Order Summary ────────────────────────────────── */}
+      {/* ─── Inline Order Summary ───────────────────────────────────── */}
       {step === "review" && address && (
-        <Modal onClose={() => setStep("idle")} title="Review Your Order" maxWidth="max-w-md">
+        <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900">Review Your Order</h3>
+            <button
+              onClick={() => setStep("idle")}
+              className="text-xs font-medium text-slate-500 hover:text-slate-700"
+            >
+              Back
+            </button>
+          </div>
+
           <div className="space-y-4">
             {/* Delivery address summary */}
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
@@ -291,75 +312,48 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
               disabled={isInitiating}
               className="w-full rounded-full bg-oceanic px-6 py-3.5 text-sm font-bold text-white shadow-sm transition hover:bg-oceanic-dark disabled:opacity-60"
             >
-              {isInitiating ? "Preparing Payment…" : `Pay ${formatPKR(totalDeposit)} Securely`}
+              {isInitiating ? "Preparing Payment…" : `Continue to Payment`}
             </button>
           </div>
-        </Modal>
-      )}
-
-      {/* ─── Safepay Embedded Checkout Modal ───────────────────────── */}
-      {isPaymentModalOpen && safepayCheckoutUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="relative h-[85vh] w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <div className="flex items-center gap-2">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4 text-oceanic">
-                  <path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-                </svg>
-                <span className="text-sm font-semibold text-slate-700">Secure Payment</span>
-              </div>
-              <button
-                onClick={closePaymentModal}
-                className="grid h-8 w-8 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-                aria-label="Close payment"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
-                  <path d="M18 6 6 18M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <iframe
-              src={safepayCheckoutUrl}
-              className="h-[calc(85vh-49px)] w-full border-0"
-              allow="payment; publickey-credentials-get; web-auth; https://sandbox.api.getsafepay.com https://getsafepay.com"
-              title="Safepay Checkout"
-            />
-          </div>
         </div>
       )}
-    </div>
-  );
-}
 
-/* ─── Reusable modal shell ──────────────────────────────────────────── */
-function Modal({
-  children,
-  onClose,
-  title,
-  maxWidth = "max-w-md",
-}: {
-  children: React.ReactNode;
-  onClose: () => void;
-  title: string;
-  maxWidth?: string;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className={`w-full ${maxWidth} max-h-[90vh] overflow-y-auto rounded-2xl bg-white shadow-2xl`}>
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <h2 className="text-sm font-bold text-slate-800">{title}</h2>
-          <button
-            onClick={onClose}
-            className="grid h-8 w-8 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-            aria-label="Close"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4">
-              <path d="M18 6 6 18M6 6l12 12" />
+      {/* ─── Inline Secure Payment (Safepay Atoms) ──────────────────── */}
+      {step === "payment" && paymentTracker && paymentAuthToken && (
+        <div className="mt-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <h3 className="mb-2 flex items-center gap-2 text-lg font-semibold text-gray-900">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-5 w-5 text-green-600">
+              <rect x="3" y="11" width="18" height="11" rx="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
+            Secure Payment
+          </h3>
+          <p className="mb-4 text-xs text-slate-500">
+            Pay a refundable {formatPKR(paymentHoldAmount)} deposit now to secure your spot. The remaining {formatPKR(remainingCOD)} is due on delivery (COD).
+          </p>
+
+          <SafepayCardAtom
+            ref={cardAtomRef}
+            tracker={paymentTracker}
+            authToken={paymentAuthToken}
+            environment="sandbox"
+            amount={paymentHoldAmount}
+            onPaymentSuccess={handlePaymentSuccess}
+            onPaymentFailure={handlePaymentFailure}
+          />
+
+          <button
+            onClick={() => {
+              setStep("review");
+              setPaymentTracker(null);
+              setPaymentAuthToken(null);
+            }}
+            className="mt-3 w-full text-center text-xs font-medium text-slate-500 hover:text-slate-700"
+          >
+            Back to review
           </button>
         </div>
-        <div className="p-5">{children}</div>
-      </div>
+      )}
     </div>
   );
 }

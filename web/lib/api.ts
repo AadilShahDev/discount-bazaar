@@ -133,6 +133,7 @@ export async function fetchActiveSquadForProduct(productId: string): Promise<Squ
 export interface EscrowCheckoutResult {
   trackerId: string;
   checkoutUrl: string;
+  authToken: string;
   holdAmount: number;
   productId: string;
   squadId: string | null;

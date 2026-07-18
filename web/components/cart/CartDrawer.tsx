@@ -8,7 +8,16 @@ import { fetchActiveSquadForProduct, getShippingAddress, initiateEscrowCheckout 
 import { formatPKR } from "@/lib/format";
 import type { Product, ShippingAddress, Squad } from "@/lib/types";
 import { ShippingAddressForm } from "@/components/checkout/ShippingAddressForm";
-import { SafepayCardAtom, type SafepayCardAtomHandle } from "@/components/checkout/SafepayCardAtom";
+import dynamic from "next/dynamic";
+import type { SafepayCardAtomHandle } from "@/components/checkout/SafepayCardAtom";
+
+// ssr: false prevents @sfpy/atoms Web Components from touching window/document
+// during Next.js server-side pre-rendering, which caused the hydration crash.
+const SafepayCardAtom = dynamic(
+  () =>
+    import("@/components/checkout/SafepayCardAtom").then((m) => ({ default: m.SafepayCardAtom })),
+  { ssr: false },
+);
 import { CheckoutErrorBoundary } from "@/components/checkout/CheckoutErrorBoundary";
 
 interface CartDrawerProps {

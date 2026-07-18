@@ -1,0 +1,95 @@
+Act as a Senior Next.js and Vanilla DOM Integration Expert.
+
+Our React Error Boundary is successfully preventing a fatal page crash, but the @sfpy/atoms React wrapper (CardCapture) is still internally throwing a runtime exception during the client-side hydration phase. React 18 is fundamentally clashing with the library's internal Web Component lifecycle.
+
+We must completely abandon the buggy React wrapper provided by the library and use a Vanilla JavaScript DOM injection approach. This isolates the Web Component from React's Virtual DOM entirely, guaranteeing stability.
+
+Please execute the following rewrite of web/components/checkout/SafepayCardAtom.tsx:
+
+Step 1: Drop the React Wrappers
+Open SafepayCardAtom.tsx.
+
+Remove the named imports for { CardCapture, PayerAuthentication } from @sfpy/atoms.
+
+Instead, use a side-effect import at the top of the file to merely register the custom elements globally with the browser: import '@sfpy/atoms';
+
+Step 2: Implement Vanilla DOM Injection
+The component must return a simple, empty container: <div ref={containerRef} className="w-full relative bg-transparent"></div>
+
+Create a useEffect hook that triggers only when tracker and authToken are valid truthy strings.
+
+Inside the effect, use Vanilla JS (document.createElement) to create the raw Web Components (<safepay-card-atom> and <safepay-payer-auth-atom>).
+
+Step 3: Exact Code Implementation
+Rewrite SafepayCardAtom.tsx to exactly match this Vanilla JS pattern. Pay special attention to assigning properties directly to the DOM node (as per Safepay's documentation) rather than using React props:
+
+TypeScript
+"use client";
+import React, { useEffect, useRef } from 'react';
+import '@sfpy/atoms'; // Registers the web components globally
+
+export default function SafepayCardAtom({ 
+  tracker, 
+  authToken, 
+  imperativeRef, 
+  inputStyle,
+  onReady,
+  onValidated,
+  onError,
+  onProceedToAuthentication // if handling 3DS
+}: any) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // 1. Guard clause: Ensure we have the required data and a mounted container
+    if (!tracker || !authToken || !containerRef.current) return;
+
+    // 2. Clear any existing children to prevent React StrictMode duplication
+    containerRef.current.innerHTML = '';
+
+    // 3. Create the raw Web Component for Card Capture
+    const cardAtom = document.createElement('safepay-card-atom') as any;
+
+    // 4. Assign configuration directly to the DOM properties
+    cardAtom.environment = 'sandbox';
+    cardAtom.tracker = tracker;
+    cardAtom.authToken = authToken;
+    if (inputStyle) cardAtom.inputStyle = inputStyle;
+
+    // 5. Attach callbacks directly as properties (per Safepay NPM documentation)
+    if (onReady) cardAtom.onReady = onReady;
+    if (onValidated) cardAtom.onValidated = (e: any) => onValidated(e);
+    if (onError) cardAtom.onError = (e: any) => onError(e);
+
+    // 6. Connect the imperative ref so the parent can trigger submissions
+    if (imperativeRef) {
+      imperativeRef.current = {
+        submit: () => cardAtom.submit(),
+        validate: () => cardAtom.validate(),
+        fetchValidity: () => cardAtom.fetchValidity(),
+      };
+    }
+
+    // 7. Create the Payer Authentication Atom (for 3D-Secure/OTP flows)
+    const authAtom = document.createElement('safepay-payer-auth-atom') as any;
+    authAtom.environment = 'sandbox';
+    authAtom.tracker = tracker;
+    authAtom.authToken = authToken;
+    if (onProceedToAuthentication) authAtom.onProceedToAuthentication = onProceedToAuthentication;
+
+    // 8. Inject the components securely into the DOM
+    containerRef.current.appendChild(cardAtom);
+    containerRef.current.appendChild(authAtom);
+
+    // 9. Cleanup function
+    return () => {
+      if (containerRef.current) containerRef.current.innerHTML = '';
+    };
+  }, [tracker, authToken, imperativeRef, inputStyle, onReady, onValidated, onError, onProceedToAuthentication]);
+
+  return <div ref={containerRef} className="w-full min-h-[150px] relative" />;
+}
+Step 4: Verify the Parent State
+Finally, open DualCheckout.tsx and CartDrawer.tsx. Ensure the parent components do not render the SafepayCardAtom dynamic component until the escrow API has returned the tracker. If tracker is null, the parent must render a placeholder (like a loading spinner) to prevent the DOM injection from failing.
+
+Please implement this Vanilla override immediately.

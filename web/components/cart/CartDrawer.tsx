@@ -11,12 +11,22 @@ import { ShippingAddressForm } from "@/components/checkout/ShippingAddressForm";
 import dynamic from "next/dynamic";
 import type { SafepayCardAtomHandle } from "@/components/checkout/SafepayCardAtom";
 
-// ssr: false prevents @sfpy/atoms Web Components from touching window/document
-// during Next.js server-side pre-rendering, which caused the hydration crash.
+// ssr: false — the @sfpy/atoms side-effect import registers custom elements and
+// accesses browser globals; it must never run during SSR.
+// loading — shown while the JS bundle is fetched (code-splitting phase); the
+// tracker guard below ensures the atom itself never mounts before the escrow
+// API has returned a session.
 const SafepayCardAtom = dynamic(
   () =>
     import("@/components/checkout/SafepayCardAtom").then((m) => ({ default: m.SafepayCardAtom })),
-  { ssr: false },
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex min-h-[150px] items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-oceanic border-t-transparent" />
+      </div>
+    ),
+  },
 );
 import { CheckoutErrorBoundary } from "@/components/checkout/CheckoutErrorBoundary";
 

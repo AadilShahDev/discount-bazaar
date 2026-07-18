@@ -53,7 +53,6 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
     const cardRef = useRef<any>(null);
     const payerAuthRef = useRef<any>(null);
 
-    const [isReady, setIsReady] = useState(false);
     const [isSubmitting, setSubmitting] = useState(false);
     const [validationError, setValidationError] = useState<string | null>(null);
     const [payerAuth, setPayerAuth] = useState<PayerAuthState | null>(null);
@@ -70,7 +69,6 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
     );
 
     function handleReady() {
-      setIsReady(true);
       onReady?.();
     }
 
@@ -98,7 +96,6 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
         "";
 
       if (!jwt || !url) {
-        // No challenge — treat as frictionless success
         setSubmitting(false);
         onPaymentSuccess?.(data);
         return;
@@ -137,42 +134,37 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
       }
     }
 
-    if (!isReady) {
-      return (
-        <div className="flex items-center justify-center py-8" aria-live="polite">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-200 border-t-oceanic" />
-          <span className="ml-2 text-sm text-slate-500">Loading secure payment…</span>
-        </div>
-      );
-    }
-
     return (
       <div className="safepay-atoms-root">
         {payerAuth ? (
-          <PayerAuthentication
-            environment={environment}
-            tracker={tracker}
-            authToken={authToken}
-            deviceDataCollectionJWT={payerAuth.deviceDataCollectionJWT}
-            deviceDataCollectionURL={payerAuth.deviceDataCollectionURL}
-            onPayerAuthenticationSuccess={handlePayerAuthSuccess}
-            onPayerAuthenticationFailure={handlePayerAuthFailure}
-            imperativeRef={payerAuthRef}
-          />
+          <div className="w-full min-h-[150px] relative">
+            <PayerAuthentication
+              environment={environment}
+              tracker={tracker}
+              authToken={authToken}
+              deviceDataCollectionJWT={payerAuth.deviceDataCollectionJWT}
+              deviceDataCollectionURL={payerAuth.deviceDataCollectionURL}
+              onPayerAuthenticationSuccess={handlePayerAuthSuccess}
+              onPayerAuthenticationFailure={handlePayerAuthFailure}
+              imperativeRef={payerAuthRef}
+            />
+          </div>
         ) : (
           <>
-            <CardCapture
-              environment={environment}
-              authToken={authToken}
-              tracker={tracker}
-              validationEvent="submit"
-              inputStyle={INPUT_STYLE}
-              onReady={handleReady}
-              onValidated={handleValidated}
-              onError={handleError}
-              onProceedToAuthentication={handleProceedToAuthentication}
-              imperativeRef={cardRef}
-            />
+            <div className="w-full min-h-[150px] relative">
+              <CardCapture
+                environment={environment}
+                authToken={authToken}
+                tracker={tracker}
+                validationEvent="submit"
+                inputStyle={INPUT_STYLE}
+                onReady={handleReady}
+                onValidated={handleValidated}
+                onError={handleError}
+                onProceedToAuthentication={handleProceedToAuthentication}
+                imperativeRef={cardRef}
+              />
+            </div>
 
             {validationError && (
               <p className="mt-3 text-xs text-red-600" role="alert">

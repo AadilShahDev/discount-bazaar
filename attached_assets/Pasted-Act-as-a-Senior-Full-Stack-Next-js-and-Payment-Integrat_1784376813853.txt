@@ -1,0 +1,41 @@
+Act as a Senior Full-Stack Next.js and Payment Integration Engineer. 
+
+We have successfully migrated our checkout flow from a Safepay Iframe to an inline integration using the "@sfpy/atoms" package. The visual card layout renders perfectly inline, but a split-second later, the entire Next.js frontend application crashes with an unhandled client-side runtime exception ("This page couldn't load").
+
+This is an execution-phase crash caused by how custom Web Components handle React event callbacks and lifecycle hydration loops. Please inspect our frontend repository and systematically execute the following surgical fixes across `web/components/checkout/SafepayCardAtom.tsx`, `web/components/product/DualCheckout.tsx`, and `web/components/cart/CartDrawer.tsx`:
+
+### Step 1: Fix Web Component Event Listeners (Use Native Refs)
+React 18 cannot pass functions as props to custom Web Components. If callbacks like `onReady`, `onValidated`, or `onError` are passed as standard attributes, the application will crash.
+1. Open `SafepayCardAtom.tsx`.
+2. Inspect how the Safepay element is rendered. Create a DOM reference using `const atomElementRef = useRef(null);`.
+3. Remove all event props from the component JSX tag itself.
+4. Set up a `useEffect` hook to manually bind native event listeners to the Web Component once it mounts in the browser DOM:
+   useEffect(() => {
+     const element = atomElementRef.current;
+     if (!element) return;
+
+     const handleReady = (e) => { /* handle ready logic */ };
+     const handleValidated = (e) => { /* handle validation logic */ };
+     const handleError = (e) => { /* handle error logic */ };
+
+     element.addEventListener('ready', handleReady);
+     element.addEventListener('validated', handleValidated);
+     element.addEventListener('error', handleError);
+
+     return () => {
+       element.removeEventListener('ready', handleReady);
+       element.removeEventListener('validated', handleValidated);
+       element.removeEventListener('error', handleError);
+     };
+   }, [tracker, authToken]);
+
+### Step 2: Prevent Infinite Re-render Loop
+1. Ensure that the initialization data (`tracker` and `authToken`) passed into the `SafepayCardAtom` does not mutate or regenerate on every parent component state update.
+2. Wrap parent checkout state transitions in `useCallback` or `useMemo` where appropriate to keep the payment component stable once it renders.
+
+### Step 3: Implement an Isolated React Error Boundary
+We must safeguard the rest of the application so that third-party script anomalies cannot bring down the entire checkout viewport.
+1. Wrap the entire inline `<SafepayCardAtom />` section inside an explicit React Error Boundary component.
+2. If an internal script inside the Atom throws an unhandled error, the Error Boundary must catch it gracefully and render a clean, localized fallback inline UI (e.g., "Payment fields temporarily unavailable. Please click 'Back to Review' and retry.") instead of crashing the entire page.
+
+Please audit these files, apply the listener and stability fixes, and verify that the page remains interactive and functional once the card components finish mounting.

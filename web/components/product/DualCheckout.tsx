@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/AuthContext";
 import { useCart } from "@/lib/CartContext";
@@ -10,6 +10,7 @@ import { formatPKR, squadMaxDiscountPercent } from "@/lib/format";
 import type { Product, ShippingAddress, Squad } from "@/lib/types";
 import { ShippingAddressForm } from "@/components/checkout/ShippingAddressForm";
 import { SafepayCardAtom, type SafepayCardAtomHandle } from "@/components/checkout/SafepayCardAtom";
+import { CheckoutErrorBoundary } from "@/components/checkout/CheckoutErrorBoundary";
 
 type CheckoutStep = "idle" | "address" | "review" | "payment";
 
@@ -102,18 +103,20 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
     }
   }
 
-  function handlePaymentSuccess() {
+  // ── Step 2 fix: stable callbacks so SafepayCardAtom doesn't re-render
+  // unnecessarily (and doesn't re-mount the Web Component) on parent updates.
+  const handlePaymentSuccess = useCallback(() => {
     setStep("idle");
     setPaymentTracker(null);
     setPaymentAuthToken(null);
     router.push(`/dashboard?success=true`);
-  }
+  }, [router]);
 
-  function handlePaymentFailure(data: any) {
+  const handlePaymentFailure = useCallback((data: any) => {
     setError(
       (data?.error ?? data?.errorMessage ?? "Payment failed. Please try a different card.") as string,
     );
-  }
+  }, []);
 
   // ─── Render ────────────────────────────────────────────────────────
   return (
@@ -332,15 +335,25 @@ export function DualCheckout({ product, activeSquad }: { product: Product; activ
             Pay a refundable {formatPKR(paymentHoldAmount)} deposit now to secure your spot. The remaining {formatPKR(remainingCOD)} is due on delivery (COD).
           </p>
 
-          <SafepayCardAtom
-            ref={cardAtomRef}
-            tracker={paymentTracker}
-            authToken={paymentAuthToken}
-            environment="sandbox"
-            amount={paymentHoldAmount}
-            onPaymentSuccess={handlePaymentSuccess}
-            onPaymentFailure={handlePaymentFailure}
-          />
+          {/* Step 3 fix: Error Boundary isolates Web Component exceptions so
+              they cannot crash the entire checkout page. */}
+          <CheckoutErrorBoundary
+            onBack={() => {
+              setStep("review");
+              setPaymentTracker(null);
+              setPaymentAuthToken(null);
+            }}
+          >
+            <SafepayCardAtom
+              ref={cardAtomRef}
+              tracker={paymentTracker}
+              authToken={paymentAuthToken}
+              environment="sandbox"
+              amount={paymentHoldAmount}
+              onPaymentSuccess={handlePaymentSuccess}
+              onPaymentFailure={handlePaymentFailure}
+            />
+          </CheckoutErrorBoundary>
 
           <button
             onClick={() => {

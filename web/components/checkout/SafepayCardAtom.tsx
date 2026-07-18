@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
 import { CardCapture, PayerAuthentication, type Environment } from "@sfpy/atoms";
 import "@sfpy/atoms/styles";
 
@@ -28,6 +28,9 @@ interface SafepayCardAtomProps {
   onPaymentFailure?: (data: any) => void;
 }
 
+// Defined outside the component so the object reference never changes between
+// renders — avoids @sfpy/atoms treating a new `inputStyle` object as a reason
+// to re-mount the Web Component.
 const INPUT_STYLE: React.CSSProperties = {
   fontFamily: "Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
   color: "#111827",
@@ -68,53 +71,77 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
       [],
     );
 
-    function handleReady() {
+    // ── Step 2 fix: wrap every callback passed to @sfpy/atoms in useCallback
+    // so their identity stays stable across parent re-renders.
+    //
+    // @sfpy/atoms internally re-binds event listeners whenever its callback
+    // props change (via a useEffect dependency array). Without stable references,
+    // every parent state update creates new function objects → triggers a
+    // CardCapture re-effect → potentially re-initialises the Web Component →
+    // fires "ready" again → triggers another state update → infinite loop that
+    // crashes the page within milliseconds of the widget mounting.
+    const handleReady = useCallback(() => {
       onReady?.();
-    }
+    }, [onReady]);
 
-    function handleValidated(data: { bin: string; lastFour: string; cardType?: string }) {
-      setValidationError(null);
-      onValidated?.(data);
-    }
+    const handleValidated = useCallback(
+      (data: { bin: string; lastFour: string; cardType?: string }) => {
+        setValidationError(null);
+        onValidated?.(data);
+      },
+      [onValidated],
+    );
 
-    function handleError(error: string) {
-      setValidationError(error);
-      setSubmitting(false);
-      onError?.(error);
-    }
+    const handleError = useCallback(
+      (error: string) => {
+        setValidationError(error);
+        setSubmitting(false);
+        onError?.(error);
+      },
+      [onError],
+    );
 
-    function handleProceedToAuthentication(data: any) {
-      const jwt =
-        data?.deviceDataCollectionJWT ??
-        data?.device_data_collection_jwt ??
-        data?.accessToken ??
-        "";
-      const url =
-        data?.deviceDataCollectionURL ??
-        data?.device_data_collection_url ??
-        data?.actionUrl ??
-        "";
+    const handleProceedToAuthentication = useCallback(
+      (data: any) => {
+        const jwt =
+          data?.deviceDataCollectionJWT ??
+          data?.device_data_collection_jwt ??
+          data?.accessToken ??
+          "";
+        const url =
+          data?.deviceDataCollectionURL ??
+          data?.device_data_collection_url ??
+          data?.actionUrl ??
+          "";
 
-      if (!jwt || !url) {
+        if (!jwt || !url) {
+          setSubmitting(false);
+          onPaymentSuccess?.(data);
+          return;
+        }
+
+        setPayerAuth({ deviceDataCollectionJWT: jwt, deviceDataCollectionURL: url });
+      },
+      [onPaymentSuccess],
+    );
+
+    const handlePayerAuthSuccess = useCallback(
+      (data: any) => {
+        setPayerAuth(null);
         setSubmitting(false);
         onPaymentSuccess?.(data);
-        return;
-      }
+      },
+      [onPaymentSuccess],
+    );
 
-      setPayerAuth({ deviceDataCollectionJWT: jwt, deviceDataCollectionURL: url });
-    }
-
-    function handlePayerAuthSuccess(data: any) {
-      setPayerAuth(null);
-      setSubmitting(false);
-      onPaymentSuccess?.(data);
-    }
-
-    function handlePayerAuthFailure(data: any) {
-      setPayerAuth(null);
-      setSubmitting(false);
-      onPaymentFailure?.(data);
-    }
+    const handlePayerAuthFailure = useCallback(
+      (data: any) => {
+        setPayerAuth(null);
+        setSubmitting(false);
+        onPaymentFailure?.(data);
+      },
+      [onPaymentFailure],
+    );
 
     async function handlePayClick() {
       if (!cardRef.current) return;

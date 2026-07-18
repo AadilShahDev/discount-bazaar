@@ -1,0 +1,34 @@
+Act as a Senior Next.js Debugger.
+
+The React 31 Error is a secondary crash. The primary failure is a 500 Internal Server Error originating from Safepay's Sandbox API (cannot find tracker with token ... using keys). This occurs because the @sfpy/atoms frontend component is attempting to fetch tracker data without the Merchant's Public API Key, causing Safepay's backend to reject the request. Safepay's React wrapper catches this 500 error and attempts to render a raw Error object, triggering React Error 31.
+
+Additionally, there is a failed fetch layer causing: Cannot destructure property 'data' of '(intermediate value)' as it is undefined.
+
+Please execute the following immediate fixes:
+
+Step 1: Inject the Safepay Public Key
+Open web/components/checkout/SafepayCardAtom.tsx.
+
+Update the <CardCapture> and <PayerAuthentication> components to include the public client key prop. (Depending on the @sfpy/atoms version, this is usually clientKey or publicKey).
+
+Map it to the environment variable:
+clientKey={process.env.NEXT_PUBLIC_SAFEPAY_PUBLIC_KEY}
+
+Ensure the tracker prop is sanitized to prevent whitespace API rejections: tracker={tracker?.trim()}.
+
+Step 2: Fix the Destructuring Crash
+Locate the frontend API fetch call for the escrow checkout (likely in DualCheckout.tsx, CartDrawer.tsx, or web/lib/api.ts).
+
+Find the line attempting to destructure the response: const { data } = await ...
+
+Wrap the fetch call in a safe try/catch and ensure the JSON response exists before destructuring it:
+
+JavaScript
+const res = await fetch('/api/escrow/checkout', { ... });
+if (!res.ok) throw new Error('Failed to initialize escrow');
+const json = await res.json();
+const tracker = json?.data?.tracker || json?.tracker; // Safely access the payload
+Step 3: Prevent Strict Mode Double-Fetching
+Ensure the function calling /api/escrow/checkout is wrapped in a mechanism that prevents it from firing twice during React 18 Strict Mode mount (e.g., using a useRef boolean flag like hasFetched.current). Safepay often voids trackers if they are initialized twice in milliseconds.
+
+Please apply these stability fixes and verify the fetch layer does not destructure an undefined response.

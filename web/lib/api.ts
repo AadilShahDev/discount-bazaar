@@ -150,6 +150,9 @@ export async function initiateEscrowCheckout(
     token,
     body: JSON.stringify({ productId, squadId, quantity }),
   });
+  if (!result?.data) {
+    throw new Error("Escrow checkout response was empty — backend may be unavailable.");
+  }
   return result.data;
 }
 

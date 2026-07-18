@@ -13,6 +13,8 @@ JWT_SECRET = "75b33cf3e64a4c05aae854cf2fae7898c2f86f084bfdc24929dc00d0a08a83e0c5
 MONGODB_URI = "mongodb://127.0.0.1:27017/discountbazaar"
 NODE_ENV = "development"
 PORT = "8000"
+BACKEND_INTERNAL_URL = "http://127.0.0.1:8000"
+REDIS_URL = "redis://127.0.0.1:6379"
 
 [workflows]
 runButton = "Project"

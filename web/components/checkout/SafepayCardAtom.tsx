@@ -156,8 +156,8 @@ export const SafepayCardAtom = forwardRef<SafepayCardAtomHandle, SafepayCardAtom
       // ── Card Capture ──────────────────────────────────────────────────────
       const cardEl = document.createElement("safepay-card-atom") as any;
       cardEl.environment = environment;
-      cardEl.tracker = tracker;
-      cardEl.authToken = authToken;
+      cardEl.tracker = tracker.trim();
+      cardEl.authToken = authToken.trim();
       cardEl.inputStyle = INPUT_STYLE;
       // Assign stable wrappers as JS properties (Stencil property callbacks).
       cardEl.onReady = stableReady;
